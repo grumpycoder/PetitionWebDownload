@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
@@ -21,6 +22,7 @@ namespace DataWebDownload
         private static int _interval;
         private static DateTime _startDate;
         private static string _discriminator;
+        private static DateTime _endDate;
 
         private static void Main()
         {
@@ -84,14 +86,23 @@ namespace DataWebDownload
                 Console.Write("Enter start date/time yyyy-MM-dd HH:mm: ");
                 line = Console.ReadLine();
             }
-            Console.Write("Enter duration in hours: ");
+            Console.Write("Enter end date/time yyyy-MM-dd HH:mm: ");
             line = Console.ReadLine();
-            while (!double.TryParse(line, out _runTime))
+            while (!DateTime.TryParseExact(line, "yyyy-MM-dd HH:mm", null, DateTimeStyles.AssumeLocal, out _endDate))
             {
-                Console.WriteLine("Invalid duration, please retry");
-                Console.Write("Enter duration in hours: ");
+                Console.WriteLine("Invalid date, please retry");
+                Console.Write("Enter end date/time yyyy-MM-dd HH:mm: ");
                 line = Console.ReadLine();
             }
+
+            //Console.Write("Enter duration in hours: ");
+            //line = Console.ReadLine();
+            //while (!double.TryParse(line, out _runTime))
+            //{
+            //    Console.WriteLine("Invalid duration, please retry");
+            //    Console.Write("Enter duration in hours: ");
+            //    line = Console.ReadLine();
+            //}
             Console.Write("Enter interval in minutes: ");
             line = Console.ReadLine();
             while (!int.TryParse(line, out _interval))
@@ -106,24 +117,25 @@ namespace DataWebDownload
         static async Task RunAsync()
         {
             var errors = new List<ErrorMessage>();
+
             try
             {
-                var endDate = _startDate.AddHours(_runTime);
+                var startTime = _startDate;
+                var endTime = _startDate.AddMinutes(_interval);
 
-                Console.WriteLine($"Retrieving dates: {_startDate} - {endDate}", Color.LightSkyBlue);
+                Console.WriteLine($"Retrieving dates: {startTime} - {endTime}", Color.LightSkyBlue);
                 bool result;
                 do
                 {
-                    if (_startDate >= endDate) { result = false; continue; }
+                    if (startTime >= _endDate) { result = false; continue; }
 
-                    Console.WriteLine($"Retrieving {_startDate} to {_startDate.AddMinutes(_interval)} from", Color.Gold);
-                    Console.WriteLine($"{_apiEndPoint}/{_startDate.EpochTime()}/{_startDate.AddMinutes(_interval).EpochTime()} ", Color.GreenYellow);
-                    var statusResult = await GetRecordsAsync($"{_apiEndPoint}/{_startDate.EpochTime()}/{_startDate.AddMinutes(_interval).EpochTime()}");
+                    Console.WriteLine($"Retrieving {startTime} to { endTime } from", Color.Gold);
+                    var statusResult = await GetRecordsAsync($"{_apiEndPoint}/{startTime.EpochTime()}/{endTime.EpochTime()}");
                     if (!statusResult.Success)
                     {
 
-                        statusResult.ErrorMessage.StartTime = _startDate.ToString("G");
-                        statusResult.ErrorMessage.EndTime = _startDate.AddMinutes(_interval).ToString("G");
+                        statusResult.ErrorMessage.StartTime = startTime.ToString("G");
+                        statusResult.ErrorMessage.EndTime = endTime.ToString("G");
 
                         Console.WriteLine($"Failed {statusResult.ErrorMessage.StartTime}-{statusResult.ErrorMessage.EndTime}");
                         errors.Add(statusResult.ErrorMessage);
@@ -139,7 +151,8 @@ namespace DataWebDownload
                         errors.Add(error);
                     }
 
-                    _startDate = _startDate.AddMinutes(_interval);
+                    startTime = startTime.AddMinutes(_interval);
+                    endTime = endTime.AddMinutes(_interval);
 
                 } while (result);
                 if (errors.Count > 0)
@@ -147,7 +160,7 @@ namespace DataWebDownload
                     Console.WriteLine($"The following failed");
                     foreach (var message in errors)
                     {
-                        System.Console.WriteLine($"{message.StartTime}  {message.EndTime} Message: {message.Message}");
+                        Console.WriteLine($"{message.StartTime}  {message.EndTime} Message: {message.Message}", Color.Red);
                     }
                 }
             }
@@ -161,6 +174,8 @@ namespace DataWebDownload
 
         static async Task<OperationResult> GetRecordsAsync(string path)
         {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            System.Console.WriteLine($"Getting records: { path }");
             var result = new OperationResult();
             List<PersonViewModel> records = null;
 
