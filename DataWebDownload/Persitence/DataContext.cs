@@ -1,7 +1,8 @@
 ﻿using System.Data.Entity;
 using System.Diagnostics;
+using DataWebDownload.Models;
 
-namespace DataWebDownload
+namespace DataWebDownload.Persitence
 {
     public class DataContext : DbContext
     {
@@ -16,12 +17,12 @@ namespace DataWebDownload
             return new DataContext();
         }
 
-        public DbSet<Person> Persons { get; set; }
+        public DbSet<Petition> Petitions { get; set; }
 
         protected override void OnModelCreating(DbModelBuilder builder)
         {
             base.OnModelCreating(builder);
-            builder.Entity<Person>().ToTable("Petitions");
+            builder.Entity<Petition>().ToTable("Petitions");
 
         }
     }

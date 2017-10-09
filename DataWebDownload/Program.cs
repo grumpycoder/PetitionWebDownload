@@ -1,6 +1,9 @@
 ﻿using AutoMapper;
 using DataWebDownload.Helpers;
-using EntityFramework.Utilities;
+using DataWebDownload.Models;
+using DataWebDownload.Persitence;
+using DataWebDownload.Repositories;
+using DataWebDownload.ViewModels;
 using Heroic.AutoMapper;
 using System;
 using System.Collections.Generic;
@@ -23,14 +26,18 @@ namespace DataWebDownload
         private static DateTime _startDate;
         private static string _discriminator;
         private static DateTime _endDate;
+        public static UnitOfWork _uow;
 
         private static void Main()
         {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             HeroicAutoMapperConfigurator.LoadMapsFromCallerAndReferencedAssemblies();
+            _uow = new UnitOfWork(new DataContext());
+
             var goAgain = true;
             while (goAgain)
             {
-                CollectAnswers().Wait();
+                CollectAnswers();
                 RunAsync().Wait();
                 goAgain = false;
                 Console.WriteLine("Finished", Color.Blue);
@@ -38,18 +45,58 @@ namespace DataWebDownload
                 Console.Write("Continue (Y/N)?: ");
                 var answer = Console.ReadLine();
                 if (answer.ToLower() == "y") goAgain = true;
-
             }
-
             Console.Write("Finished");
+        }
+
+        private static async Task<IEnumerable<TrumpPetitionViewModel>> GetRecords(string url)
+        {
+            //var context = new DataContext();
+
+            System.Console.WriteLine($"Getting records: { url }");
+            IEnumerable<TrumpPetitionViewModel> records = null;
+
+            try
+            {
+
+                var response = await Client.GetAsync(url);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    records = await response.Content.ReadAsAsync<List<TrumpPetitionViewModel>>();
+                }
+                else
+                {
+                    var message = new ErrorMessage() { Message = $"Failed {response.StatusCode}" };
+                    Console.WriteLine($"{message.Message}");
+                }
+            }
+            catch
+            {
+                Console.WriteLine("Error");
+            }
+            var list = Mapper.Map<List<Petition>>(records);
+
+            //foreach (var petition in list)
+            //{
+            //    context.Petitions.Add(petition);
+            //    //_uow.Petitions.Add(petition);
+            //}
+            //context.SaveChanges();
+            _uow.Petitions.AddRange(list);
+            _uow.Complete();
+
+            return records;
+
 
         }
 
-        static async Task CollectAnswers()
+        private static void CollectAnswers()
         {
             Client = new HttpClient();
             string line;
             var isValidUrl = false;
+            // Check for valid url
             while (!isValidUrl)
             {
                 try
@@ -70,6 +117,7 @@ namespace DataWebDownload
 
             }
             line = "";
+
             while (string.IsNullOrWhiteSpace(line))
             {
                 Console.Write("Enter discriminator: ");
@@ -86,23 +134,14 @@ namespace DataWebDownload
                 Console.Write("Enter start date/time yyyy-MM-dd HH:mm: ");
                 line = Console.ReadLine();
             }
-            Console.Write("Enter end date/time yyyy-MM-dd HH:mm: ");
+            Console.Write("Enter duration in minutes: ");
             line = Console.ReadLine();
-            while (!DateTime.TryParseExact(line, "yyyy-MM-dd HH:mm", null, DateTimeStyles.AssumeLocal, out _endDate))
+            while (!double.TryParse(line, out _runTime))
             {
-                Console.WriteLine("Invalid date, please retry");
-                Console.Write("Enter end date/time yyyy-MM-dd HH:mm: ");
+                Console.WriteLine("Invalid duration, please retry");
+                Console.Write("Enter duration in hours: ");
                 line = Console.ReadLine();
             }
-
-            //Console.Write("Enter duration in hours: ");
-            //line = Console.ReadLine();
-            //while (!double.TryParse(line, out _runTime))
-            //{
-            //    Console.WriteLine("Invalid duration, please retry");
-            //    Console.Write("Enter duration in hours: ");
-            //    line = Console.ReadLine();
-            //}
             Console.Write("Enter interval in minutes: ");
             line = Console.ReadLine();
             while (!int.TryParse(line, out _interval))
@@ -121,38 +160,41 @@ namespace DataWebDownload
             try
             {
                 var startTime = _startDate;
-                var endTime = _startDate.AddMinutes(_interval);
+                _endDate = _startDate.AddMinutes(_runTime);
+                var localEndTime = _startDate.AddMinutes(_interval);
 
-                Console.WriteLine($"Retrieving dates: {startTime} - {endTime}", Color.LightSkyBlue);
-                bool result;
+                Console.WriteLine($"Retrieving dates: {startTime} - {localEndTime}", Color.LightSkyBlue);
+
+                var result = true;
                 do
                 {
                     if (startTime >= _endDate) { result = false; continue; }
 
-                    Console.WriteLine($"Retrieving {startTime} to { endTime } from", Color.Gold);
-                    var statusResult = await GetRecordsAsync($"{_apiEndPoint}/{startTime.EpochTime()}/{endTime.EpochTime()}");
+                    Console.WriteLine($"Retrieving {startTime} to { localEndTime }", Color.Gold);
+                    var statusResult = await GetRecordsAsync($"{_apiEndPoint}/{startTime.EpochTime()}/{localEndTime.EpochTime()}");
+
                     if (!statusResult.Success)
                     {
-
                         statusResult.ErrorMessage.StartTime = startTime.ToString("G");
-                        statusResult.ErrorMessage.EndTime = endTime.ToString("G");
+                        statusResult.ErrorMessage.EndTime = localEndTime.ToString("G");
 
                         Console.WriteLine($"Failed {statusResult.ErrorMessage.StartTime}-{statusResult.ErrorMessage.EndTime}");
                         errors.Add(statusResult.ErrorMessage);
                     }
 
-                    var list = Mapper.Map<List<Person>>(statusResult.Persons);
+                    var petitions = Mapper.Map<List<Petition>>(statusResult.Petitions);
 
-                    result = await SaveRecords(list);
-
-                    if (!result)
+                    foreach (var petition in petitions)
                     {
-                        var error = new ErrorMessage() { Message = "Failed to save data", StartTime = _startDate.ToString("G"), EndTime = _startDate.AddMinutes(_interval).ToString("G") };
-                        errors.Add(error);
+                        petition.Discriminator = _discriminator;
                     }
 
+                    _uow.Petitions.AddRange(petitions);
+
+                    _uow.Complete();
+
                     startTime = startTime.AddMinutes(_interval);
-                    endTime = endTime.AddMinutes(_interval);
+                    localEndTime = localEndTime.AddMinutes(_interval);
 
                 } while (result);
                 if (errors.Count > 0)
@@ -174,17 +216,15 @@ namespace DataWebDownload
 
         static async Task<OperationResult> GetRecordsAsync(string path)
         {
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             System.Console.WriteLine($"Getting records: { path }");
             var result = new OperationResult();
-            List<PersonViewModel> records = null;
 
             try
             {
                 var response = await Client.GetAsync(path);
                 if (response.IsSuccessStatusCode)
                 {
-                    result.Persons = await response.Content.ReadAsAsync<List<PersonViewModel>>();
+                    result.Petitions = await response.Content.ReadAsAsync<List<TrumpPetitionViewModel>>();
                 }
                 else
                 {
@@ -203,59 +243,5 @@ namespace DataWebDownload
             return result;
         }
 
-        static async Task<bool> SaveRecords(List<Person> list)
-        {
-            if (list == null) return true;
-            try
-            {
-                using (var db = DataContext.Create())
-                {
-                    if (list.Count == 0) return true;
-                    foreach (var person in list)
-                    {
-                        person.Discriminator = _discriminator;
-                    }
-                    EFBatchOperation.For(db, db.Persons).InsertAll(list);
-                    await db.SaveChangesAsync();
-                }
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine(ex.Message, Color.Red);
-                return false;
-            }
-        }
-    }
-
-    internal class ErrorMessage
-    {
-        public string Message { get; set; }
-        public string StartTime { get; set; }
-        public string EndTime { get; set; }
-    }
-
-    internal class OperationResult
-    {
-        public bool Success { get; set; }
-        public List<PersonViewModel> Persons { get; set; }
-        public string Message { get; set; }
-        public ErrorMessage ErrorMessage { get; set; }
     }
 }
-
-//https://www.splcenter.org/admin/splc-entityform-submissions/vEHCjGUdJoiqftMUsS1RXGUymuog4rlZyJnawUqTHYzUUp3tGP/tell_donald_trump_to_reject_hate
-
-//apiEndPoint =
-//    $"https://www.splcenter.org/admin/splc-entityform-submissions/vEHCjGUdJoiqftMUsS1RXGUymuog4rlZyJnawUqTHYzUUp3tGP/tell_donald_trump_to_reject_hate/{startDate}/{endDate}";
-
-
-
-//apiEndPoint =
-//    "https://www.splcenter.org/admin/splc-entityform-submissions/vEHCjGUdJoiqftMUsS1RXGUymuog4rlZyJnawUqTHYzUUp3tGP/tell_donald_trump_to_reject_hate/1478995149/1478995149";
-
-//apiEndPoint =
-//    $"https://www.splcenter.org/admin/splc-entityform-submissions/vEHCjGUdJoiqftMUsS1RXGUymuog4rlZyJnawUqTHYzUUp3tGP/tell_donald_trump_to_reject_hate/{startDate.EpochTime()}/{startDate.AddHours(1).EpochTime()}";
-//apiEndPoint =
-//    $"http://live-splc.pantheon.io/admin/splc-entityform-submissions/vEHCjGUdJoiqftMUsS1RXGUymuog4rlZyJnawUqTHYzUUp3tGP/say_no_to_stephen_bannon/{startDate.EpochTime()}/{startDate.AddMinutes(10).EpochTime()}";
